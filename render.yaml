@@ -1,0 +1,44 @@
+# Render blueprint for the BuyUpon API. Secrets are set in the Render dashboard, never here.
+services:
+  - type: web
+    name: buycmm-backend
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BUY_DB_NAME
+        value: buyupon
+      - key: SELL_DB_NAME
+        value: test
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: FROM_EMAIL_Brevo
+        sync: false
+      - key: FROM_NAME_Brevo
+        sync: false
+      - key: BUY_ADMIN_EMAILS
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: STOREFRONT_URL
+        sync: false
+      - key: ADMIN_URL
+        sync: false
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: ADMIN_NOTIFY_EMAIL
+        sync: false
+      - key: PAYPAL_MODE
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false

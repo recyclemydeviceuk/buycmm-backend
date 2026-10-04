@@ -13,6 +13,11 @@ npm run dev              # http://localhost:8010 (tsx watch)
 npm run build && npm start
 ```
 
+Deploy on Render: build command `npm ci && npm run build`, start command `npm start`,
+health check `/health`, Node 22 (`.node-version`). `render.yaml` lists every environment
+variable; set the secret ones in the dashboard. Build-time packages (`typescript`,
+`@types/*`) are in `dependencies` because Render installs with `NODE_ENV=production`.
+
 ## Isolation from the sell site
 
 The sell site and this API share one Atlas cluster and the same credentials, but
