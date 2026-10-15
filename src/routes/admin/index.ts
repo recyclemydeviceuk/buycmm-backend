@@ -13,7 +13,7 @@ import { emails } from '../../emails/templates.js';
 import { actor, requireAdmin, requirePermission as perm } from '../../middleware/auth.js';
 import { authRouter } from './auth.js';
 import { logActivity } from '../../services/activity.js';
-import { allProducts, invalidateCatalog, normalise } from '../../services/catalog.js';
+import { allProducts, colourProblem, invalidateCatalog, normalise } from '../../services/catalog.js';
 import { customersFromOrders } from '../../services/customers.js';
 import { dashboard } from '../../services/dashboard.js';
 import { addNote, changeStatus, getOrder, refund, resendEmail, setTracking } from '../../services/orders.js';
@@ -50,12 +50,13 @@ adminRouter.get('/search', perm('dashboard.view', 'orders.view', 'products.view'
 }));
 
 // ─── Products ─────────────────────────────────────────────────────────────────
-const variantSchema = z.object({ storage: z.string().min(1), network: z.string().min(1), condition: z.enum(['excellent', 'good', 'fair']), price: z.number().min(0), stock: z.number().int().min(0) });
+const variantSchema = z.object({ storage: z.string().min(1), colour: z.string().trim().max(60).default(''), condition: z.enum(CONDITIONS), price: z.number().min(0), stock: z.number().int().min(0) });
+const colourSchema = z.object({ name: z.string().trim().min(1).max(60), hex: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a six-digit hex colour, e.g. #1F2A44.'), image: z.string().trim().max(600).default('') });
 const productInput = z.object({
   slug: z.string().regex(/^[a-z0-9-]+$/), brand: z.string().min(1), name: z.string().trim().min(1), series: z.string().min(1), releaseYear: z.number().int().min(2010).max(2035), image: z.string().min(1), rrp: z.number().min(0),
   status: z.enum(['active', 'draft', 'archived']), featured: z.boolean(), description: z.string().max(4000).default(''),
   specs: z.object({ display: z.string().default(''), chip: z.string().default(''), camera: z.string().default(''), battery: z.string().default(''), connectivity: z.string().default('') }),
-  storages: z.array(z.string()), networks: z.array(z.string()), variants: z.array(variantSchema), rating: z.number().min(0).max(5).optional(), reviewCount: z.number().int().min(0).optional(),
+  storages: z.array(z.string()), colours: z.array(colourSchema).max(24), variants: z.array(variantSchema), rating: z.number().min(0).max(5).optional(), reviewCount: z.number().int().min(0).optional(),
 });
 const totalStock = (p: ProductDoc) => p.variants.reduce((s, v) => s + v.stock, 0);
 
@@ -109,6 +110,8 @@ adminRouter.post('/products', perm('products.edit'), wrap(async (req, res) => {
   const input = parse(productInput, req.body);
   if (await col.products().findOne({ slug: input.slug })) throw conflict(`A product with the slug "${input.slug}" already exists.`);
   const doc = await normalise({ ...input, id: input.slug, rating: input.rating ?? 0, reviewCount: input.reviewCount ?? 0, fromPrice: 0, createdAt: nowIso(), updatedAt: nowIso() });
+  const problem = colourProblem(doc);
+  if (problem) throw badRequest(problem);
   await col.products().insertOne(doc);
   if (doc.featured) await updateSettings({ featuredSlugs: [...new Set([...(await getSettings()).featuredSlugs, doc.slug])] });
   invalidateCatalog();
@@ -122,6 +125,8 @@ adminRouter.patch('/products/:id', perm('products.edit'), wrap(async (req, res) 
   if (!p) throw notFound('Product not found.');
   if (patch.slug && patch.slug !== p.slug && (await col.products().findOne({ slug: patch.slug }))) throw conflict(`Slug "${patch.slug}" is already in use.`);
   const next = await normalise({ ...p, ...patch });
+  const problem = colourProblem(next);
+  if (problem) throw badRequest(problem);
   await col.products().replaceOne({ id: p.id }, next);
   if (patch.featured !== undefined || (patch.slug && patch.slug !== p.slug)) {
     const s = await getSettings();
@@ -150,14 +155,13 @@ adminRouter.delete('/products/:id', perm('products.delete'), wrap(async (req, re
 adminRouter.get('/variants', perm('products.view'), wrap(async (req, res) => {
   const q = Q(req);
   const low = (await getSettings()).lowStockThreshold;
-  const rows: Array<{ productId: string; productName: string; brand: string; slug: string; image: string; storage: string; network: string; condition: Condition; price: number; stock: number; rrp: number }> = [];
-  (await allProducts()).filter((p) => p.status !== 'archived').forEach((p) => p.variants.forEach((v) => rows.push({ productId: p.id, productName: `${p.brand} ${p.name}`, brand: p.brand, slug: p.slug, image: p.image, storage: v.storage, network: v.network, condition: v.condition, price: v.price, stock: v.stock, rrp: p.rrp })));
+  const rows: Array<{ productId: string; productName: string; brand: string; slug: string; image: string; storage: string; colour: string; condition: Condition; price: number; stock: number; rrp: number }> = [];
+  (await allProducts()).filter((p) => p.status !== 'archived').forEach((p) => p.variants.forEach((v) => rows.push({ productId: p.id, productName: `${p.brand} ${p.name}`, brand: p.brand, slug: p.slug, image: p.colours.find((c) => c.name === v.colour)?.image || p.image, storage: v.storage, colour: v.colour, condition: v.condition, price: v.price, stock: v.stock, rrp: p.rrp })));
   const summary = { inStock: rows.filter((r) => r.stock > low).length, low: rows.filter((r) => r.stock > 0 && r.stock <= low).length, out: rows.filter((r) => r.stock === 0).length, units: rows.reduce((s, r) => s + r.stock, 0), value: rows.reduce((s, r) => s + r.stock * r.price, 0) };
-  const search = qs.raw(q.search); const brand = qs.raw(q.brand); const network = qs.raw(q.network); const condition = qs.raw(q.condition); const storage = qs.raw(q.storage); const stock = qs.raw(q.stock);
+  const search = qs.raw(q.search); const brand = qs.raw(q.brand); const condition = qs.raw(q.condition); const storage = qs.raw(q.storage); const stock = qs.raw(q.stock);
   let items = rows.filter((r) => {
-    if (search && !hit(`${r.productName} ${r.slug} ${r.storage} ${r.network}`, search)) return false;
+    if (search && !hit(`${r.productName} ${r.slug} ${r.storage} ${r.colour}`, search)) return false;
     if (brand && r.brand !== brand) return false;
-    if (network && r.network !== network) return false;
     if (condition && r.condition !== condition) return false;
     if (storage && r.storage !== storage) return false;
     if (stock === 'out' && r.stock !== 0) return false;
@@ -166,14 +170,14 @@ adminRouter.get('/variants', perm('products.view'), wrap(async (req, res) => {
     return true;
   });
   const sort = qs.raw(q.sort) ?? 'product';
-  const sorters: Record<string, (a: (typeof rows)[number], b: (typeof rows)[number]) => number> = { product: (a, b) => a.productName.localeCompare(b.productName) || storageIndex(a.storage) - storageIndex(b.storage), 'stock-asc': (a, b) => a.stock - b.stock, 'stock-desc': (a, b) => b.stock - a.stock, 'price-asc': (a, b) => a.price - b.price, 'price-desc': (a, b) => b.price - a.price };
+  const sorters: Record<string, (a: (typeof rows)[number], b: (typeof rows)[number]) => number> = { product: (a, b) => a.productName.localeCompare(b.productName) || storageIndex(a.storage) - storageIndex(b.storage) || a.colour.localeCompare(b.colour) || CONDITIONS.indexOf(a.condition) - CONDITIONS.indexOf(b.condition), 'stock-asc': (a, b) => a.stock - b.stock, 'stock-desc': (a, b) => b.stock - a.stock, 'price-asc': (a, b) => a.price - b.price, 'price-desc': (a, b) => b.price - a.price };
   items = [...items].sort(sorters[sort] ?? sorters.product);
   const { page: p, pageSize } = page(q, 50);
   res.json({ ...paginate(items, p, pageSize), summary });
 }));
 
 adminRouter.patch('/variants', perm('inventory.edit'), wrap(async (req, res) => {
-  const { updates } = parse(z.object({ updates: z.array(z.object({ productId: z.string(), storage: z.string(), network: z.string(), condition: z.enum(['excellent', 'good', 'fair']), price: z.number().min(0).optional(), stock: z.number().int().min(0).optional() })).min(1).max(500) }), req.body);
+  const { updates } = parse(z.object({ updates: z.array(z.object({ productId: z.string(), storage: z.string(), colour: z.string().default(''), condition: z.enum(CONDITIONS), price: z.number().min(0).optional(), stock: z.number().int().min(0).optional() })).min(1).max(500) }), req.body);
   let updated = 0;
   const touched = new Set<string>();
   for (const u of updates) {
@@ -181,7 +185,7 @@ adminRouter.patch('/variants', perm('inventory.edit'), wrap(async (req, res) => 
     if (u.price !== undefined) set['variants.$.price'] = Math.round(u.price);
     if (u.stock !== undefined) set['variants.$.stock'] = Math.round(u.stock);
     if (!Object.keys(set).length) continue;
-    const r = await col.products().updateOne({ id: u.productId, variants: { $elemMatch: { storage: u.storage, network: u.network, condition: u.condition } } }, { $set: set });
+    const r = await col.products().updateOne({ id: u.productId, variants: { $elemMatch: { storage: u.storage, colour: u.colour, condition: u.condition } } }, { $set: set });
     if (r.matchedCount) { updated += 1; touched.add(u.productId); }
   }
   for (const id of touched) { const p = await col.products().findOne({ id }); if (p) await col.products().replaceOne({ id }, await normalise(p)); }
@@ -190,9 +194,9 @@ adminRouter.patch('/variants', perm('inventory.edit'), wrap(async (req, res) => 
   res.json({ updated });
 }));
 
-const ruleSchema = z.object({ mode: z.enum(['percent', 'fixed']), amount: z.number(), brand: z.string().optional(), series: z.string().optional(), condition: z.enum(['excellent', 'good', 'fair']).optional(), network: z.string().optional(), roundTo: z.number().int().min(0).max(9).optional() });
+const ruleSchema = z.object({ mode: z.enum(['percent', 'fixed']), amount: z.number(), brand: z.string().optional(), series: z.string().optional(), condition: z.enum(CONDITIONS).optional(), roundTo: z.number().int().min(0).max(9).optional() });
 type Rule = z.infer<typeof ruleSchema>;
-const matchRule = (p: ProductDoc, v: Variant, r: Rule) => (!r.brand || p.brand === r.brand) && (!r.series || p.series === r.series) && (!r.condition || v.condition === r.condition) && (!r.network || v.network === r.network);
+const matchRule = (p: ProductDoc, v: Variant, r: Rule) => (!r.brand || p.brand === r.brand) && (!r.series || p.series === r.series) && (!r.condition || v.condition === r.condition);
 const applyRule = (price: number, r: Rule) => { let n = r.mode === 'percent' ? price * (1 + r.amount / 100) : price + r.amount; n = r.roundTo !== undefined ? Math.round((n - r.roundTo) / 10) * 10 + r.roundTo : Math.round(n); return Math.max(10, n); };
 
 adminRouter.post('/pricing/preview', perm('pricing.rules'), wrap(async (req, res) => {
@@ -211,7 +215,7 @@ adminRouter.post('/pricing/apply', perm('pricing.rules'), wrap(async (req, res) 
     if (changed) await col.products().replaceOne({ id: p.id }, await normalise(p));
   }
   invalidateCatalog();
-  const scope = [rule.brand, rule.series, rule.condition, rule.network].filter(Boolean).join(' · ') || 'All variants';
+  const scope = [rule.brand, rule.series, rule.condition].filter(Boolean).join(' · ') || 'All variants';
   await logActivity(actor(req), 'Applied price rule', `${scope} · ${rule.mode === 'percent' ? `${rule.amount}%` : `£${rule.amount}`}`, 'product', `${affected} variants changed`);
   res.json({ affected });
 }));
@@ -388,8 +392,8 @@ adminRouter.patch('/settings', perm('settings.edit'), wrap(async (req, res) => {
   const schema = z.object({
     store: z.object({ name: z.string().min(1), supportEmail: z.string().email(), whatsapp: z.string(), hours: z.string(), siteUrl: z.string(), warrantyMonths: z.number().int().min(0), returnsDays: z.number().int().min(0) }).optional(),
     delivery: z.array(z.object({ id: z.enum(['standard', 'next-day']), label: z.string().min(1), description: z.string(), fee: z.number().min(0), etaDays: z.number().int().min(1), cutoff: z.string(), enabled: z.boolean() })).optional(),
-    networks: z.array(z.string().min(1)).min(1).optional(), storages: z.array(z.string().min(1)).min(1).optional(),
-    conditions: z.array(z.object({ key: z.enum(CONDITIONS), label: z.string().min(1), short: z.string(), blurb: z.string(), minBattery: z.number().int().min(0).max(100) })).optional(),
+    storages: z.array(z.string().min(1)).min(1).optional(),
+    conditions: z.array(z.object({ key: z.enum(CONDITIONS), label: z.string().min(1), short: z.string(), blurb: z.string(), minBattery: z.number().int().min(0).max(100), images: z.array(z.object({ url: z.string().trim().min(1).max(600), caption: z.string().trim().max(40).default('') })).max(6).default([]) })).optional(),
     featuredSlugs: z.array(z.string()).optional(), lowStockThreshold: z.number().int().min(0).optional(),
     payments: z.object({ provider: z.literal('paypal'), mode: z.enum(['sandbox', 'live']), clientId: z.string(), merchantEmail: z.string() }).optional(),
     notifications: z.object({ orderEmail: z.boolean(), lowStockEmail: z.boolean(), enquiryEmail: z.boolean(), reviewEmail: z.boolean(), notifyTo: z.string() }).optional(),

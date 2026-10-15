@@ -1,7 +1,7 @@
 // Dashboard analytics: all computed from the order book in memory. Same definitions as the admin's mock adapter.
 import { col } from '../config/db.js';
 import { norm } from '../lib/ids.js';
-import { addDays, dayKey, startOfDay, storageIndex, ORDER_STATUSES, type Condition, type OrderStatus } from '../lib/format.js';
+import { addDays, dayKey, startOfDay, storageIndex, CONDITIONS, ORDER_STATUSES, type Condition, type OrderStatus } from '../lib/format.js';
 import type { OrderDoc } from '../types.js';
 import { getSettings } from './settings.js';
 import { allProducts } from './catalog.js';
@@ -68,7 +68,7 @@ export async function dashboard(range: Range) {
   const overdue = inTransit.filter((o) => t(o.estimatedDelivery) + 86_400_000 < now.getTime()).length;
 
   const low = settings.lowStockThreshold;
-  const stockByCondition = { excellent: { units: 0, value: 0 }, good: { units: 0, value: 0 }, fair: { units: 0, value: 0 } } as Record<Condition, { units: number; value: number }>;
+  const stockByCondition = Object.fromEntries(CONDITIONS.map((c) => [c, { units: 0, value: 0 }])) as Record<Condition, { units: number; value: number }>;
   const stock = { units: 0, value: 0, low: 0, out: 0, healthy: 0 };
   const variantStock = new Map<string, number>();
   products.filter((p) => p.status === 'active').forEach((p) => p.variants.forEach((v) => {
@@ -77,7 +77,7 @@ export async function dashboard(range: Range) {
     stock.units += v.stock;
     stock.value += v.stock * v.price;
     if (v.stock === 0) stock.out += 1; else if (v.stock <= low) stock.low += 1; else stock.healthy += 1;
-    variantStock.set(`${p.id}|${v.storage}|${v.network}|${v.condition}`, v.stock);
+    variantStock.set(`${p.id}|${v.storage}|${v.colour}|${v.condition}`, v.stock);
   }));
 
   const split = <K extends string>(pick: (l: OrderDoc['lines'][number]) => K) => {
@@ -87,7 +87,7 @@ export async function dashboard(range: Range) {
   };
   const productSeries = new Map(products.map((p) => [p.id, p.series]));
   const byCond = split((l) => l.condition);
-  const salesByCondition = (['excellent', 'good', 'fair'] as Condition[]).map((c) => byCond.find((x) => x.key === c) ?? { key: c, units: 0, revenue: 0 });
+  const salesByCondition = CONDITIONS.map((c) => byCond.find((x) => x.key === c) ?? { key: c, units: 0, revenue: 0 });
 
   const top = new Map<string, { productId: string; name: string; brand: string; image: string; units: number; revenue: number; stock: number }>();
   const variantSold = new Map<string, number>();
@@ -95,17 +95,17 @@ export async function dashboard(range: Range) {
     const p = products.find((x) => x.id === l.productId);
     const e = top.get(l.productId) ?? { productId: l.productId, name: l.name, brand: l.brand, image: l.image, units: 0, revenue: 0, stock: p ? p.variants.reduce((s, v) => s + v.stock, 0) : 0 };
     e.units += l.quantity; e.revenue += l.unitPrice * l.quantity; top.set(l.productId, e);
-    const vk = `${l.productId}|${l.storage}|${l.network}|${l.condition}`;
+    const vk = `${l.productId}|${l.storage}|${l.colour}|${l.condition}`;
     variantSold.set(vk, (variantSold.get(vk) ?? 0) + l.quantity);
   }));
-  const restock: Array<{ productId: string; name: string; brand: string; image: string; storage: string; network: string; condition: Condition; stock: number; soldInRange: number; price: number }> = [];
+  const restock: Array<{ productId: string; name: string; brand: string; image: string; storage: string; colour: string; condition: Condition; stock: number; soldInRange: number; price: number }> = [];
   variantSold.forEach((soldInRange, vk) => {
     const st = variantStock.get(vk);
     if (st === undefined || st > low) return;
-    const [productId, storage, network, condition] = vk.split('|');
+    const [productId, storage, colour, condition] = vk.split('|');
     const p = products.find((x) => x.id === productId)!;
-    const v = p.variants.find((x) => x.storage === storage && x.network === network && x.condition === condition)!;
-    restock.push({ productId, name: p.name, brand: p.brand, image: p.image, storage, network, condition: condition as Condition, stock: st, soldInRange, price: v.price });
+    const v = p.variants.find((x) => x.storage === storage && x.colour === colour && x.condition === condition)!;
+    restock.push({ productId, name: p.name, brand: p.brand, image: p.colours.find((c) => c.name === colour)?.image || p.image, storage, colour, condition: condition as Condition, stock: st, soldInRange, price: v.price });
   });
   restock.sort((a, b) => b.soldInRange - a.soldInRange || a.stock - b.stock);
 
@@ -154,7 +154,7 @@ export async function dashboard(range: Range) {
     stockByCondition,
     salesByCondition,
     salesByBrand: split((l) => l.brand),
-    salesByNetwork: split((l) => l.network),
+    salesByColour: split((l) => l.colour || 'No colour'),
     salesByStorage: split((l) => l.storage).sort((a, b) => storageIndex(a.key) - storageIndex(b.key)),
     salesBySeries: split((l) => productSeries.get(l.productId) ?? 'Other'),
     cities: [...cityMap.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 6),

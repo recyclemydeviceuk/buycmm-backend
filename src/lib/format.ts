@@ -3,9 +3,9 @@ export const storageIndex = (s: string) => {
   const i = STORAGE_ORDER.indexOf(s);
   return i === -1 ? 99 : i;
 };
-export const CONDITIONS = ['excellent', 'good', 'fair'] as const;
+export const CONDITIONS = ['premium', 'excellent', 'good', 'fair'] as const;
 export type Condition = (typeof CONDITIONS)[number];
-export const CONDITION_LABEL: Record<Condition, string> = { excellent: 'Excellent', good: 'Good', fair: 'Fair' };
+export const CONDITION_LABEL: Record<Condition, string> = { premium: 'Premium', excellent: 'Excellent', good: 'Good', fair: 'Fair' };
 export const ORDER_STATUSES = ['confirmed', 'packing', 'dispatched', 'delivered', 'cancelled', 'returned'] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 export const NEXT_STATUSES: Record<OrderStatus, OrderStatus[]> = {

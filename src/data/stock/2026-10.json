@@ -1,0 +1,28 @@
+{
+  "featured": ["apple-iphone-17-pro-max", "samsung-galaxy-s26-ultra-5g", "apple-iphone-17-pro", "samsung-galaxy-s26-plus", "apple-iphone-16-pro-max", "apple-iphone-15-pro-max", "apple-iphone-13-pro-max"],
+  "modelImages": {
+    "apple-iphone-17-pro-max": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-17-pro-max-deep-blue.webp",
+    "apple-iphone-17-pro": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-17-pro-cosmic-orange.webp",
+    "apple-iphone-16-pro-max": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-16-pro-max-desert-titanium.webp",
+    "apple-iphone-15-pro-max": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-15-pro-max-black-titanium.webp",
+    "apple-iphone-13-pro-max": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-13-pro-max-silver.webp",
+    "samsung-galaxy-s26-ultra-5g": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/samsung-galaxy-s26-ultra-silver-shadow.webp",
+    "samsung-galaxy-s26-plus": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/samsung-galaxy-s26-plus-black.webp"
+  },
+  "gradePhotos": {
+    "premium": [{"url": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/grade-premium.webp", "caption": "Boxed"}],
+    "excellent": [{"url": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/grade-excellent.webp", "caption": "Body"}],
+    "good": [{"url": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/grade-good.webp", "caption": "Frame"}]
+  },
+  "items": [
+    {"slug": "apple-iphone-17-pro-max", "colour": {"name": "Deep Blue", "hex": "#3E4555", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-17-pro-max-deep-blue.webp"}, "storage": "256GB", "condition": "excellent", "price": 980, "stock": 1},
+    {"slug": "apple-iphone-17-pro-max", "colour": {"name": "Cosmic Orange", "hex": "#F5853F", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-17-pro-max-cosmic-orange.webp"}, "storage": "256GB", "condition": "excellent", "price": 970, "stock": 1},
+    {"slug": "apple-iphone-17-pro", "colour": {"name": "Cosmic Orange", "hex": "#F5853F", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-17-pro-cosmic-orange.webp"}, "storage": "256GB", "condition": "fair", "price": 860, "stock": 1},
+    {"slug": "apple-iphone-16-pro-max", "colour": {"name": "Desert Titanium", "hex": "#D9C2AE", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-16-pro-max-desert-titanium.webp"}, "storage": "256GB", "condition": "excellent", "price": 705, "stock": 1},
+    {"slug": "apple-iphone-15-pro-max", "colour": {"name": "Black Titanium", "hex": "#4C4A46", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-15-pro-max-black-titanium.webp"}, "storage": "256GB", "condition": "fair", "price": 495, "stock": 1},
+    {"slug": "apple-iphone-13-pro-max", "colour": {"name": "Silver", "hex": "#E8E8E3", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/apple-iphone-13-pro-max-silver.webp"}, "storage": "1TB", "condition": "fair", "price": 450, "stock": 1},
+    {"slug": "samsung-galaxy-s26-ultra-5g", "colour": {"name": "Silver Shadow", "hex": "#9EA0A2", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/samsung-galaxy-s26-ultra-silver-shadow.webp"}, "storage": "256GB", "condition": "excellent", "price": 870, "stock": 1},
+    {"slug": "samsung-galaxy-s26-ultra-5g", "colour": {"name": "White", "hex": "#F5F5F5", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/samsung-galaxy-s26-ultra-white.webp"}, "storage": "256GB", "condition": "excellent", "price": 850, "stock": 1},
+    {"slug": "samsung-galaxy-s26-plus", "colour": {"name": "Black", "hex": "#2F3338", "image": "https://zennara-storage.s3.ap-south-1.amazonaws.com/device-images/buyupon/samsung-galaxy-s26-plus-black.webp"}, "storage": "512GB", "condition": "excellent", "price": 800, "stock": 1}
+  ]
+}

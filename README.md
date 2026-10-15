@@ -9,6 +9,7 @@ npm install
 cp .env.example .env     # then fill in the values (see below)
 npm run seed             # products from src/data/catalogue.json + roles, settings, owner admins
 npm run db:wipe -- --yes # clears orders, reviews, enquiries, subscribers, activity (keeps products/settings/team)
+npm run stock:import -- src/data/stock/2026-10.json        # dry run of a stock batch; add --yes to put it on sale
 npm run dev              # http://localhost:8010 (tsx watch)
 npm run build && npm start
 ```
@@ -47,10 +48,10 @@ New for the buy side:
 
 ## What it does
 
-- **Catalogue**: products with the storage × network × grade variant matrix; facets, search, sort and paging with the same semantics as the storefront's mock adapter; featured rail and related models from settings.
+- **Catalogue**: products with colours and the storage × colour × grade variant matrix (grades: Premium, Excellent, Good, Fair; every phone is unlocked, so there is no network); facets, search, sort and paging with the same semantics as the storefront's mock adapter; featured rail and related models from settings.
 - **Checkout**: validates every line against live stock, recomputes totals server-side, captures the PayPal order for that total, then decrements stock atomically (a variant cannot go negative under concurrent checkouts; if reservation fails after capture the payment is refunded). Sends the confirmation email and an admin alert.
 - **Orders**: `confirmed → packing → dispatched → delivered`, plus `cancelled` / `returned` which restock and refund the remaining balance via PayPal. Tracking is required before dispatch. Dispatch, delivery, cancellation and refund emails. Internal notes, flags, re-sent emails, VAT invoice, editable delivery details, full timeline.
 - **Admin auth**: emailed six-digit code (Brevo) and nothing else; the code is never returned by the API. 5 attempts, 10-minute expiry, JWT bearer tokens. Admins and roles live in the database; every admin route checks a permission from `src/lib/permissions.ts` (kept in sync with the admin UI).
-- **Reviews**: storefront submissions land as `pending`; approving recalculates the product's public rating. **Enquiries**: contact form → acknowledgement + admin alert; replies from the admin are emailed. **Newsletter**: subscribe/unsubscribe. **Settings** (delivery, networks, storages, grade copy, featured, PayPal mode, notifications), **team & roles**, **activity log**, **dashboard** analytics and **global search**.
+- **Reviews**: storefront submissions land as `pending`; approving recalculates the product's public rating. **Enquiries**: contact form → acknowledgement + admin alert; replies from the admin are emailed. **Newsletter**: subscribe/unsubscribe. **Settings** (delivery, storages, grade copy and example photos, featured, PayPal mode, notifications), **team & roles**, **activity log**, **dashboard** analytics and **global search**.
 
 Rate limits: 300 requests / 15 min per IP overall; 30 / 15 min on checkout, contact, newsletter and reviews; 10 / 15 min on OTP endpoints.

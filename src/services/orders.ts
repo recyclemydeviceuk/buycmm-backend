@@ -6,7 +6,7 @@ import { logger } from '../lib/logger.js';
 import { captureOrder, refundCapture } from '../lib/paypal.js';
 import { sendEmail } from '../lib/brevo.js';
 import { emails } from '../emails/templates.js';
-import { NEXT_STATUSES, addDays, type OrderStatus } from '../lib/format.js';
+import { CONDITION_LABEL, NEXT_STATUSES, addDays, type OrderStatus } from '../lib/format.js';
 import type { Address, BasketLine, DeliveryMethod, OrderDoc, OrderEvent, PublicOrder } from '../types.js';
 import { invalidateCatalog } from './catalog.js';
 import { getSettings } from './settings.js';
@@ -18,9 +18,11 @@ export function toPublicOrder(o: OrderDoc): PublicOrder {
 }
 
 const event = (type: OrderEvent['type'], message: string, by: string): OrderEvent => ({ id: uid('ev'), at: nowIso(), type, message, by });
+/** The one variant an order line was bought from. */
+const variantOf = (l: Pick<BasketLine, 'storage' | 'colour' | 'condition'>) => ({ storage: l.storage, colour: l.colour, condition: l.condition });
 
 export interface CheckoutInput {
-  lines: Array<{ productId: string; storage: string; network: string; condition: string; quantity: number }>;
+  lines: Array<{ productId: string; storage: string; colour: string; condition: string; quantity: number }>;
   customer: Address;
   delivery: DeliveryMethod;
   paymentToken: string;
@@ -40,10 +42,10 @@ export async function checkout(input: CheckoutInput): Promise<OrderDoc> {
   const lines: BasketLine[] = [];
   for (const [i, l] of input.lines.entries()) {
     const p = await col.products().findOne({ id: l.productId, status: 'active' });
-    const v = p?.variants.find((x) => x.storage === l.storage && x.network === l.network && x.condition === l.condition);
+    const v = p?.variants.find((x) => x.storage === l.storage && x.colour === l.colour && x.condition === l.condition);
     if (!p || !v) throw badRequest(`One of the items in your basket is no longer available.`);
-    if (v.stock < l.quantity) throw conflict(`Only ${v.stock} of ${p.brand} ${p.name} ${l.storage} ${l.network} ${l.condition} left in stock.`);
-    lines.push({ lineId: String(i), productId: p.id, slug: p.slug, name: p.name, brand: p.brand, image: p.image, storage: v.storage, network: v.network, condition: v.condition, unitPrice: v.price, quantity: l.quantity });
+    if (v.stock < l.quantity) throw conflict(`Only ${v.stock} of ${[p.brand, p.name, v.storage, v.colour, CONDITION_LABEL[v.condition]].filter(Boolean).join(' ')} left in stock.`);
+    lines.push({ lineId: String(i), productId: p.id, slug: p.slug, name: p.name, brand: p.brand, image: p.colours.find((c) => c.name === v.colour)?.image || p.image, storage: v.storage, colour: v.colour, condition: v.condition, unitPrice: v.price, quantity: l.quantity });
   }
   const subtotal = lines.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
   const deliveryFee = option.fee;
@@ -57,14 +59,14 @@ export async function checkout(input: CheckoutInput): Promise<OrderDoc> {
   try {
     for (const l of lines) {
       const r = await col.products().updateOne(
-        { id: l.productId, variants: { $elemMatch: { storage: l.storage, network: l.network, condition: l.condition, stock: { $gte: l.quantity } } } },
+        { id: l.productId, variants: { $elemMatch: { ...variantOf(l), stock: { $gte: l.quantity } } } },
         { $inc: { 'variants.$.stock': -l.quantity }, $set: { updatedAt: nowIso() } },
       );
       if (r.modifiedCount !== 1) throw conflict(`${l.brand} ${l.name} sold out while you were paying.`);
       taken.push(l);
     }
   } catch (e) {
-    for (const l of taken) await col.products().updateOne({ id: l.productId, 'variants.storage': l.storage, 'variants.network': l.network, 'variants.condition': l.condition }, { $inc: { 'variants.$.stock': l.quantity } }).catch(() => undefined);
+    for (const l of taken) await col.products().updateOne({ id: l.productId, variants: { $elemMatch: variantOf(l) } }, { $inc: { 'variants.$.stock': l.quantity } }).catch(() => undefined);
     await refundCapture(captureId, total, 'Stock unavailable').catch((err) => logger.error('Refund after failed reservation failed', { captureId, err: String(err) }));
     throw e;
   }
@@ -158,7 +160,7 @@ export async function changeStatus(n: string, change: StatusChange, by: string):
 
   if (change.status === 'cancelled' || change.status === 'returned') {
     for (const l of o.lines) {
-      await col.products().updateOne({ id: l.productId, 'variants.storage': l.storage, 'variants.network': l.network, 'variants.condition': l.condition }, { $inc: { 'variants.$.stock': l.quantity }, $set: { updatedAt: nowIso() } });
+      await col.products().updateOne({ id: l.productId, variants: { $elemMatch: variantOf(l) } }, { $inc: { 'variants.$.stock': l.quantity }, $set: { updatedAt: nowIso() } });
     }
     await recomputeFromPrice(o.lines.map((l) => l.productId));
     invalidateCatalog();

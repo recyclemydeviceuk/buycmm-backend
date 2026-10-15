@@ -10,7 +10,10 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "seed": "tsx src/scripts/seed.ts",
-    "db:wipe": "tsx src/scripts/wipe.ts"
+    "db:wipe": "tsx src/scripts/wipe.ts",
+    "migrate:colours": "tsx src/scripts/migrate-colours.ts",
+    "seed:colours": "tsx src/scripts/seed-colours.ts",
+    "stock:import": "tsx src/scripts/import-stock.ts"
   },
   "engines": {
     "node": "22.x"

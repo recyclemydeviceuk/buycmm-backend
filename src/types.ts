@@ -9,9 +9,16 @@ export type DeliveryMethod = 'standard' | 'next-day';
 export type PaymentStatus = 'paid' | 'partially-refunded' | 'refunded';
 export type ProductStatus = 'active' | 'draft' | 'archived';
 
+/** A finish the model is sold in. `image` is the photo shown when that colour is picked. */
+export interface Colour {
+  name: string;
+  hex: string;
+  image: string;
+}
 export interface Variant {
   storage: string;
-  network: string;
+  /** One of the product's `colours` names, or '' when the product has no colour options. */
+  colour: string;
   condition: Condition;
   price: number;
   stock: number;
@@ -38,7 +45,7 @@ export interface ProductDoc {
   reviewCount: number;
   specs: ProductSpecs;
   storages: string[];
-  networks: string[];
+  colours: Colour[];
   variants: Variant[];
   status: ProductStatus;
   featured: boolean;
@@ -67,7 +74,7 @@ export interface BasketLine {
   brand: string;
   image: string;
   storage: string;
-  network: string;
+  colour: string;
   condition: Condition;
   unitPrice: number;
   quantity: number;
@@ -155,14 +162,22 @@ export interface DeliveryOption {
   cutoff: string;
   enabled: boolean;
 }
+export interface ConditionSetting {
+  key: Condition;
+  label: string;
+  short: string;
+  blurb: string;
+  minBattery: number;
+  /** Example photos of a phone in this grade, shown in the grading guide and on product pages. */
+  images: Array<{ url: string; caption: string }>;
+}
 export interface SettingsDoc {
   _id?: ObjectId;
   id: 'main';
   store: { name: string; supportEmail: string; whatsapp: string; hours: string; siteUrl: string; warrantyMonths: number; returnsDays: number };
   delivery: DeliveryOption[];
-  networks: string[];
   storages: string[];
-  conditions: Array<{ key: Condition; label: string; short: string; blurb: string; minBattery: number }>;
+  conditions: ConditionSetting[];
   featuredSlugs: string[];
   lowStockThreshold: number;
   payments: { provider: 'paypal'; mode: 'sandbox' | 'live'; clientId: string; merchantEmail: string };

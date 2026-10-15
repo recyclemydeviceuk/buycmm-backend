@@ -7,9 +7,10 @@ import { env } from '../../config/env.js';
 import { notFound } from '../../lib/errors.js';
 import { parse, qs, wrap } from '../../lib/http.js';
 import { nowIso, uid } from '../../lib/ids.js';
+import { CONDITIONS } from '../../lib/format.js';
 import { sendEmail } from '../../lib/brevo.js';
 import { emails } from '../../emails/templates.js';
-import { activeProducts, facets, featured, listPublicProducts, related, toPublic } from '../../services/catalog.js';
+import { activeProducts, displayImage, facets, featured, listPublicProducts, related, toPublic } from '../../services/catalog.js';
 import { checkout, getOrder, toPublicOrder } from '../../services/orders.js';
 import { getSettings } from '../../services/settings.js';
 
@@ -17,7 +18,7 @@ export const publicRouter = Router();
 const writeLimit = rateLimit({ windowMs: 15 * 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many requests, please try again shortly.' } });
 
 const productQuery = (q: Record<string, unknown>) => ({
-  brand: qs.list(q.brand), series: qs.list(q.series), network: qs.list(q.network), condition: qs.list(q.condition), storage: qs.list(q.storage),
+  brand: qs.list(q.brand), series: qs.list(q.series), condition: qs.list(q.condition), storage: qs.list(q.storage),
   minPrice: qs.num(q.minPrice), maxPrice: qs.num(q.maxPrice), search: qs.raw(q.search), sort: qs.raw(q.sort), page: qs.num(q.page), pageSize: qs.num(q.pageSize),
 });
 
@@ -25,7 +26,7 @@ publicRouter.get('/products', wrap(async (req, res) => res.json(await listPublic
 /** Lightweight list of every active product for the mega menu, instant search and showcase tiles. */
 publicRouter.get('/products/menu', wrap(async (_req, res) => {
   res.set('Cache-Control', 'public, max-age=60');
-  res.json((await activeProducts()).map((p) => ({ id: p.id, slug: p.slug, brand: p.brand, name: p.name, series: p.series, image: p.image, fromPrice: p.fromPrice, rrp: p.rrp, releaseYear: p.releaseYear, rating: p.rating, reviewCount: p.reviewCount, storages: p.storages })));
+  res.json((await activeProducts()).map((p) => ({ id: p.id, slug: p.slug, brand: p.brand, name: p.name, series: p.series, image: displayImage(p), fromPrice: p.fromPrice, rrp: p.rrp, releaseYear: p.releaseYear, rating: p.rating, reviewCount: p.reviewCount, storages: p.storages, inStock: p.variants.some((v) => v.stock > 0) })));
 }));
 /** Latest approved reviews across the catalogue (home page). */
 publicRouter.get('/reviews/recent', wrap(async (req, res) => {
@@ -62,9 +63,9 @@ publicRouter.get('/products/:slug', wrap(async (req, res) => {
 
 const address = z.object({ firstName: z.string().trim().min(1).max(60), lastName: z.string().trim().min(1).max(60), email: z.string().trim().email(), phone: z.string().trim().min(7).max(25), line1: z.string().trim().min(3).max(120), line2: z.string().trim().max(120).optional(), city: z.string().trim().min(1).max(80), postcode: z.string().trim().min(5).max(10) });
 const checkoutSchema = z.object({
-  lines: z.array(z.object({ productId: z.string().min(1), storage: z.string().min(1), network: z.string().min(1), condition: z.enum(['excellent', 'good', 'fair']), quantity: z.number().int().min(1).max(5) })).min(1).max(10),
+  lines: z.array(z.object({ productId: z.string().min(1), storage: z.string().min(1), colour: z.string().max(60).default(''), condition: z.enum(CONDITIONS), quantity: z.number().int().min(1).max(5) })).min(1).max(10),
   customer: address,
-  delivery: z.enum(['standard', 'next-day']),
+  delivery: z.literal('next-day'),
   paymentToken: z.string().min(4).max(120),
 });
 publicRouter.post('/checkout', writeLimit, wrap(async (req, res) => {
@@ -95,10 +96,10 @@ publicRouter.post('/contact', writeLimit, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/** Public, cacheable store config the storefront can read instead of hard-coding (delivery options, networks, grades). */
+/** Public, cacheable store config the storefront can read instead of hard-coding (delivery options, grades and their example photos). */
 publicRouter.get('/config', wrap(async (_req, res) => {
   const s = await getSettings();
-  res.json({ store: { name: s.store.name, supportEmail: s.store.supportEmail, whatsapp: s.store.whatsapp, hours: s.store.hours, warrantyMonths: s.store.warrantyMonths, returnsDays: s.store.returnsDays }, delivery: s.delivery.filter((d) => d.enabled), networks: s.networks, conditions: s.conditions, paypal: { mode: s.payments.mode, clientId: s.payments.clientId } });
+  res.json({ store: { name: s.store.name, supportEmail: s.store.supportEmail, whatsapp: s.store.whatsapp, hours: s.store.hours, warrantyMonths: s.store.warrantyMonths, returnsDays: s.store.returnsDays }, delivery: s.delivery.filter((d) => d.enabled), conditions: s.conditions, paypal: { mode: s.payments.mode, clientId: s.payments.clientId } });
 }));
 
 void clean;
