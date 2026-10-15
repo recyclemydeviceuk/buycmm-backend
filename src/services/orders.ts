@@ -3,11 +3,11 @@ import { env } from '../config/env.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { nowIso, orderNumber, uid } from '../lib/ids.js';
 import { logger } from '../lib/logger.js';
-import { captureOrder, refundCapture } from '../lib/paypal.js';
+import { PayPalError, captureOrder as capturePayPalOrder, createOrder as createPayPalOrder, getOrder as getPayPalOrder, refundCapture, type CaptureResult } from '../lib/paypal.js';
 import { sendEmail } from '../lib/brevo.js';
 import { emails } from '../emails/templates.js';
 import { CONDITION_LABEL, NEXT_STATUSES, addDays, type OrderStatus } from '../lib/format.js';
-import type { Address, BasketLine, DeliveryMethod, OrderDoc, OrderEvent, PublicOrder } from '../types.js';
+import type { Address, BasketLine, DeliveryMethod, OrderDoc, OrderEvent, PaymentDoc, PublicOrder } from '../types.js';
 import { invalidateCatalog } from './catalog.js';
 import { getSettings } from './settings.js';
 import { logActivity } from './activity.js';
@@ -21,40 +21,97 @@ const event = (type: OrderEvent['type'], message: string, by: string): OrderEven
 /** The one variant an order line was bought from. */
 const variantOf = (l: Pick<BasketLine, 'storage' | 'colour' | 'condition'>) => ({ storage: l.storage, colour: l.colour, condition: l.condition });
 
-export interface CheckoutInput {
+export interface BasketInput {
   lines: Array<{ productId: string; storage: string; colour: string; condition: string; quantity: number }>;
   customer: Address;
   delivery: DeliveryMethod;
-  paymentToken: string;
 }
 
-/**
- * Creates an order: validates lines against live stock, captures the PayPal payment for the server-side total,
- * then decrements stock atomically (a variant can never go below zero even under concurrent checkouts).
- */
-export async function checkout(input: CheckoutInput): Promise<OrderDoc> {
+/** Prices a basket from the database (never from the client) and checks it is in stock right now. */
+async function priceBasket(input: BasketInput) {
   const settings = await getSettings();
   const option = settings.delivery.find((d) => d.id === input.delivery && d.enabled);
   if (!option) throw badRequest('That delivery option is not available.');
   if (!input.lines.length) throw badRequest('Your basket is empty.');
-
-  // Resolve lines against the database.
   const lines: BasketLine[] = [];
   for (const [i, l] of input.lines.entries()) {
     const p = await col.products().findOne({ id: l.productId, status: 'active' });
     const v = p?.variants.find((x) => x.storage === l.storage && x.colour === l.colour && x.condition === l.condition);
     if (!p || !v) throw badRequest(`One of the items in your basket is no longer available.`);
+    if (p.colours.length > 0 && !v.colour) throw badRequest(`Choose a colour for the ${p.brand} ${p.name}.`);
     if (v.stock < l.quantity) throw conflict(`Only ${v.stock} of ${[p.brand, p.name, v.storage, v.colour, CONDITION_LABEL[v.condition]].filter(Boolean).join(' ')} left in stock.`);
     lines.push({ lineId: String(i), productId: p.id, slug: p.slug, name: p.name, brand: p.brand, image: p.colours.find((c) => c.name === v.colour)?.image || p.image, storage: v.storage, colour: v.colour, condition: v.condition, unitPrice: v.price, quantity: l.quantity });
   }
   const subtotal = lines.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
-  const deliveryFee = option.fee;
-  const total = subtotal + deliveryFee;
+  return { settings, option, lines, subtotal, deliveryFee: option.fee, total: subtotal + option.fee };
+}
 
-  // Take payment for the server-side total (never the client's).
-  const { captureId } = await captureOrder(input.paymentToken, total);
+/**
+ * Step 1 of checkout: prices the basket, creates the matching PayPal order and remembers the basket against it.
+ * The browser only ever receives PayPal's order id.
+ */
+export async function startPayment(input: BasketInput): Promise<{ paypalOrderId: string }> {
+  const { settings, lines, subtotal, deliveryFee, total } = await priceBasket(input);
+  const customer = { ...input.customer, email: input.customer.email.trim().toLowerCase(), postcode: input.customer.postcode.toUpperCase().trim() };
+  const reference = uid('pay');
+  const paypalOrderId = await createPayPalOrder({
+    reference,
+    subtotal,
+    deliveryFee,
+    total,
+    brandName: settings.store.name || 'CashMyMobile',
+    items: lines.map((l) => ({ name: [l.brand, l.name, l.storage, l.colour, CONDITION_LABEL[l.condition]].filter(Boolean).join(' '), sku: `${l.productId}|${l.storage}|${l.colour}|${l.condition}`, unitPrice: l.unitPrice, quantity: l.quantity })),
+    shipTo: { fullName: `${customer.firstName} ${customer.lastName}`, line1: customer.line1, line2: customer.line2, city: customer.city, postcode: customer.postcode },
+  });
+  const now = nowIso();
+  await col.payments().insertOne({ id: reference, paypalOrderId, status: 'created', lines, customer, delivery: input.delivery, subtotal, deliveryFee, total, createdAt: now, updatedAt: now });
+  logger.info('PayPal order created', { reference, paypalOrderId, total });
+  return { paypalOrderId };
+}
 
-  // Reserve stock. Any failure here after capture is refunded immediately.
+const releaseStock = async (lines: BasketLine[]) => {
+  for (const l of lines) await col.products().updateOne({ id: l.productId, variants: { $elemMatch: variantOf(l) } }, { $inc: { 'variants.$.stock': l.quantity } }).catch(() => undefined);
+};
+
+/**
+ * Step 2 of checkout, after the shopper approves in PayPal: reserves stock, captures the payment and creates the order.
+ * Stock is reserved before any money moves, so a sold-out phone is never charged. Calling this again for the same
+ * PayPal order returns the order already created.
+ */
+export async function checkout(paypalOrderId: string): Promise<OrderDoc> {
+  const done = await col.orders().findOne({ paymentRef: paypalOrderId });
+  if (done) return done;
+
+  const payment = await col.payments().findOne({ paypalOrderId });
+  if (!payment) throw conflict('This payment session has expired. Refresh the page and try again; you have not been charged.');
+  // Only one request may work on a payment at a time.
+  const claimed = await col.payments().findOneAndUpdate({ paypalOrderId, status: 'created' }, { $set: { status: 'processing', updatedAt: nowIso() } });
+  if (!claimed) {
+    if (payment.status === 'completed' && payment.orderNumber) return getOrder(payment.orderNumber);
+    if (payment.status === 'processing') throw conflict('Your payment is already being processed. Please wait a moment.');
+    throw conflict('This payment could not be completed. Refresh the page and try again; you have not been charged.');
+  }
+  const fail = async (status: PaymentDoc['status'], error: string) => {
+    await col.payments().updateOne({ paypalOrderId }, { $set: { status, error, updatedAt: nowIso() } });
+  };
+
+  // The order the shopper approved must be the one we created, for the amount we priced.
+  const pp = await getPayPalOrder(paypalOrderId).catch(async (e) => {
+    await fail('created', String(e));
+    throw e;
+  });
+  const unit = pp.purchase_units[0];
+  if (!unit || unit.amount.currency_code !== 'GBP' || Number(unit.amount.value) !== payment.total || unit.reference_id !== payment.id) {
+    await fail('failed', 'Amount or reference mismatch');
+    throw badRequest('The PayPal payment does not match your basket. Please refresh and try again; you have not been charged.');
+  }
+  if (pp.status !== 'APPROVED' && pp.status !== 'COMPLETED') {
+    await fail('created', `PayPal order is ${pp.status}`);
+    throw badRequest('Please approve the payment in the PayPal window first.');
+  }
+
+  // Reserve stock. Nothing has been charged yet, so a failure here costs the shopper nothing.
+  const lines = payment.lines;
   const taken: BasketLine[] = [];
   try {
     for (const l of lines) {
@@ -62,37 +119,58 @@ export async function checkout(input: CheckoutInput): Promise<OrderDoc> {
         { id: l.productId, variants: { $elemMatch: { ...variantOf(l), stock: { $gte: l.quantity } } } },
         { $inc: { 'variants.$.stock': -l.quantity }, $set: { updatedAt: nowIso() } },
       );
-      if (r.modifiedCount !== 1) throw conflict(`${l.brand} ${l.name} sold out while you were paying.`);
+      if (r.modifiedCount !== 1) throw conflict(`Sorry, the ${l.brand} ${l.name} sold out while you were paying. You have not been charged.`);
       taken.push(l);
     }
   } catch (e) {
-    for (const l of taken) await col.products().updateOne({ id: l.productId, variants: { $elemMatch: variantOf(l) } }, { $inc: { 'variants.$.stock': l.quantity } }).catch(() => undefined);
-    await refundCapture(captureId, total, 'Stock unavailable').catch((err) => logger.error('Refund after failed reservation failed', { captureId, err: String(err) }));
+    await releaseStock(taken);
+    await fail('failed', String((e as Error).message));
+    throw e;
+  }
+
+  // Take the money.
+  let capture: CaptureResult;
+  try {
+    capture = await capturePayPalOrder(paypalOrderId);
+  } catch (e) {
+    await releaseStock(taken);
+    // A declined card can be retried with another funding source in the same PayPal order.
+    const retry = e instanceof PayPalError && e.issue === 'INSTRUMENT_DECLINED';
+    await fail(retry ? 'created' : 'failed', String((e as Error).message));
+    if (retry) throw new PayPalError(422, 'Your payment method was declined. Please choose another one in PayPal.', 'INSTRUMENT_DECLINED');
     throw e;
   }
   await recomputeFromPrice(lines.map((l) => l.productId));
   invalidateCatalog();
 
+  const settings = await getSettings();
+  const option = settings.delivery.find((d) => d.id === payment.delivery) ?? { etaDays: 1 };
   const now = new Date();
+  const pending = capture.status === 'PENDING';
   const order: OrderDoc = {
     orderNumber: orderNumber(now),
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
     status: 'confirmed',
     lines,
-    subtotal,
-    deliveryFee,
-    total,
-    delivery: input.delivery,
-    customer: { ...input.customer, email: input.customer.email.trim().toLowerCase() },
+    subtotal: payment.subtotal,
+    deliveryFee: payment.deliveryFee,
+    total: payment.total,
+    delivery: payment.delivery,
+    customer: payment.customer,
     estimatedDelivery: addDays(now, option.etaDays).toISOString(),
-    paymentStatus: 'paid',
+    paymentStatus: pending ? 'pending' : 'paid',
     paymentMethod: 'paypal',
-    paymentRef: input.paymentToken,
-    captureId,
+    paymentRef: paypalOrderId,
+    captureId: capture.captureId,
     refundedAmount: 0,
-    events: [event('created', `Order placed · paid £${total} via PayPal (${input.paymentToken})`, 'Customer')],
-    flagged: false,
+    events: [
+      event('created', pending
+        ? `Order placed · PayPal payment of £${payment.total} is PENDING${capture.reason ? ` (${capture.reason})` : ''}. Do not dispatch until PayPal completes it.`
+        : `Order placed · paid £${payment.total} via PayPal (capture ${capture.captureId})`, 'Customer'),
+    ],
+    // A pending payment needs a person to watch it.
+    flagged: pending,
   };
   // Order numbers are random; retry on the (very unlikely) collision.
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -101,10 +179,16 @@ export async function checkout(input: CheckoutInput): Promise<OrderDoc> {
       break;
     } catch (e) {
       if ((e as { code?: number }).code === 11000 && attempt < 4) order.orderNumber = orderNumber(now);
-      else throw e;
+      else {
+        // The money is taken but the order could not be saved: keep everything needed to sort it out by hand.
+        logger.error('Order insert failed after capture', { paypalOrderId, captureId: capture.captureId, err: String(e) });
+        await fail('failed', `Captured ${capture.captureId} but order insert failed: ${String(e)}`);
+        throw e;
+      }
     }
   }
-  logger.info('Order created', { orderNumber: order.orderNumber, total });
+  await col.payments().updateOne({ paypalOrderId }, { $set: { status: 'completed', orderNumber: order.orderNumber, updatedAt: nowIso() } });
+  logger.info('Order created', { orderNumber: order.orderNumber, total: order.total, payment: capture.status });
 
   // Emails are best-effort and recorded on the timeline.
   const conf = emails.orderConfirmation(order);
@@ -165,8 +249,10 @@ export async function changeStatus(n: string, change: StatusChange, by: string):
     await recomputeFromPrice(o.lines.map((l) => l.productId));
     invalidateCatalog();
     const remaining = o.total - o.refundedAmount;
-    if (remaining > 0) {
-      await refundCapture(o.captureId ?? o.paymentRef, remaining, change.status === 'cancelled' ? 'Order cancelled' : 'Order returned');
+    if (o.paymentStatus === 'pending') throw badRequest('PayPal is still clearing this payment. Wait until it completes before cancelling, or cancel it in PayPal.');
+    if (remaining > 0 && o.paymentStatus !== 'failed') {
+      if (!o.captureId) throw badRequest('This order has no PayPal capture to refund; refund it in PayPal directly.');
+      await refundCapture(o.captureId, remaining, change.status === 'cancelled' ? 'Order cancelled' : 'Order returned');
       set.refundedAmount = o.total;
       set.paymentStatus = 'refunded';
       events.push(event('payment', `Refunded £${remaining} to PayPal`, by));
@@ -188,9 +274,11 @@ export async function changeStatus(n: string, change: StatusChange, by: string):
 
 export async function refund(n: string, amount: number, reason: string, by: string): Promise<OrderDoc> {
   const o = await getOrder(n);
+  if (o.paymentStatus === 'pending' || o.paymentStatus === 'failed') throw badRequest(`This payment is ${o.paymentStatus} in PayPal, so there is nothing to refund yet.`);
   const remaining = o.total - o.refundedAmount;
   if (!(amount > 0) || amount > remaining) throw badRequest(`Refund must be between £1 and £${remaining}.`);
-  await refundCapture(o.captureId ?? o.paymentRef, amount, reason);
+  if (!o.captureId) throw badRequest('This order has no PayPal capture to refund; refund it in PayPal directly.');
+  await refundCapture(o.captureId, amount, reason);
   const refundedAmount = o.refundedAmount + amount;
   const paymentStatus = refundedAmount >= o.total ? 'refunded' : 'partially-refunded';
   const ev = event('payment', `Refunded £${amount} to PayPal · ${reason}`, by);
@@ -225,4 +313,56 @@ export async function setTracking(n: string, tracking: { carrier: string; number
   await col.orders().updateOne({ orderNumber: n }, { $set: { tracking, updatedAt: nowIso() }, $push: { events: event('tracking', `Tracking ${o.tracking ? 'updated' : 'added'} · ${tracking.carrier} ${tracking.number}`, by) } });
   await logActivity(by, 'Updated tracking', o.orderNumber, 'order', `${tracking.carrier} ${tracking.number}`);
   return getOrder(n);
+}
+
+interface PayPalWebhookEvent {
+  id: string;
+  event_type: string;
+  resource: { id: string; status?: string; amount?: { value: string }; links?: Array<{ rel: string; href: string }>; status_details?: { reason?: string } };
+}
+
+/**
+ * Keeps orders in step with PayPal. Only events PayPal has signed reach here (see the webhook route).
+ *   PAYMENT.CAPTURE.COMPLETED  a pending payment has cleared → paid
+ *   PAYMENT.CAPTURE.DENIED     a pending payment was refused → failed, flagged, stock released
+ *   PAYMENT.CAPTURE.REFUNDED   a refund (ours or made in PayPal) → noted on the timeline
+ *   PAYMENT.CAPTURE.REVERSED   a chargeback / reversal → flagged
+ */
+export async function handlePayPalWebhook(e: PayPalWebhookEvent): Promise<void> {
+  const by = 'PayPal';
+  // A refund's resource is the refund; its "up" link points at the capture.
+  const captureId = e.event_type === 'PAYMENT.CAPTURE.REFUNDED' ? e.resource.links?.find((l) => l.rel === 'up')?.href.split('/').pop() : e.resource.id;
+  if (!captureId) return;
+  const o = await col.orders().findOne({ captureId });
+  if (!o) {
+    logger.info('PayPal webhook for an unknown capture', { type: e.event_type, captureId });
+    return;
+  }
+  // PayPal retries deliveries; each event is applied once.
+  if (o.events.some((ev) => ev.message.includes(`[${e.id}]`))) return;
+  const tag = ` [${e.id}]`;
+  switch (e.event_type) {
+    case 'PAYMENT.CAPTURE.COMPLETED':
+      if (o.paymentStatus !== 'pending') return;
+      await col.orders().updateOne({ orderNumber: o.orderNumber }, { $set: { paymentStatus: 'paid', flagged: false, updatedAt: nowIso() }, $push: { events: event('payment', `PayPal payment completed · £${o.total} received${tag}`, by) } });
+      return;
+    case 'PAYMENT.CAPTURE.DENIED':
+    case 'PAYMENT.CAPTURE.DECLINED': {
+      await col.orders().updateOne({ orderNumber: o.orderNumber }, { $set: { paymentStatus: 'failed', status: 'cancelled', flagged: true, updatedAt: nowIso() }, $push: { events: event('payment', `PayPal DENIED the payment${e.resource.status_details?.reason ? ` (${e.resource.status_details.reason})` : ''}. Order cancelled and stock returned. Do not dispatch.${tag}`, by) } });
+      if (o.status !== 'cancelled') {
+        await releaseStock(o.lines);
+        await recomputeFromPrice(o.lines.map((l) => l.productId));
+        invalidateCatalog();
+      }
+      return;
+    }
+    case 'PAYMENT.CAPTURE.REFUNDED':
+      await addEvent(o.orderNumber, event('payment', `PayPal confirmed a refund of £${e.resource.amount?.value ?? '?'} (refund ${e.resource.id})${tag}`, by));
+      return;
+    case 'PAYMENT.CAPTURE.REVERSED':
+      await col.orders().updateOne({ orderNumber: o.orderNumber }, { $set: { flagged: true, updatedAt: nowIso() }, $push: { events: event('payment', `PayPal REVERSED this payment (chargeback or dispute). Check the PayPal Resolution Centre.${tag}`, by) } });
+      return;
+    default:
+      logger.debug('PayPal webhook ignored', { type: e.event_type });
+  }
 }

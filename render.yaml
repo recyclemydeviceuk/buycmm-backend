@@ -42,3 +42,5 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false

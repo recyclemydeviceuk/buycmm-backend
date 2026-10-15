@@ -23,6 +23,8 @@ const schema = z.object({
   PAYPAL_MODE: z.enum(['sandbox', 'live']).default('sandbox'),
   PAYPAL_CLIENT_ID: z.string().optional(),
   PAYPAL_CLIENT_SECRET: z.string().optional(),
+  /** From the PayPal developer dashboard → your app → Webhooks. Without it webhooks are ignored. */
+  PAYPAL_WEBHOOK_ID: z.string().optional(),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900_000),
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(300),
 });

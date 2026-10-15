@@ -11,7 +11,9 @@ import { CONDITIONS } from '../../lib/format.js';
 import { sendEmail } from '../../lib/brevo.js';
 import { emails } from '../../emails/templates.js';
 import { activeProducts, displayImage, facets, featured, listPublicProducts, related, toPublic } from '../../services/catalog.js';
-import { checkout, getOrder, toPublicOrder } from '../../services/orders.js';
+import { checkout, getOrder, handlePayPalWebhook, startPayment, toPublicOrder } from '../../services/orders.js';
+import { verifyWebhook } from '../../lib/paypal.js';
+import { logger } from '../../lib/logger.js';
 import { getSettings } from '../../services/settings.js';
 
 export const publicRouter = Router();
@@ -62,16 +64,33 @@ publicRouter.get('/products/:slug', wrap(async (req, res) => {
 }));
 
 const address = z.object({ firstName: z.string().trim().min(1).max(60), lastName: z.string().trim().min(1).max(60), email: z.string().trim().email(), phone: z.string().trim().min(7).max(25), line1: z.string().trim().min(3).max(120), line2: z.string().trim().max(120).optional(), city: z.string().trim().min(1).max(80), postcode: z.string().trim().min(5).max(10) });
-const checkoutSchema = z.object({
+const basketSchema = z.object({
   lines: z.array(z.object({ productId: z.string().min(1), storage: z.string().min(1), colour: z.string().max(60).default(''), condition: z.enum(CONDITIONS), quantity: z.number().int().min(1).max(5) })).min(1).max(10),
   customer: address,
   delivery: z.literal('next-day'),
-  paymentToken: z.string().min(4).max(120),
 });
+const paypalOrderId = z.string().trim().regex(/^[A-Z0-9-]{8,40}$/i, 'Invalid PayPal order id.');
+
+// Checkout step 1: price the basket on the server and open a PayPal order for exactly that amount.
+publicRouter.post('/paypal/orders', writeLimit, wrap(async (req, res) => {
+  const body = parse(basketSchema, req.body);
+  res.status(201).json(await startPayment(body));
+}));
+
+// Checkout step 2: after the shopper approves in PayPal, capture it and create the order (idempotent per PayPal order).
 publicRouter.post('/checkout', writeLimit, wrap(async (req, res) => {
-  const body = parse(checkoutSchema, req.body);
-  const order = await checkout({ ...body, customer: { ...body.customer, postcode: body.customer.postcode.toUpperCase() } });
-  res.status(201).json(toPublicOrder(order));
+  const body = parse(z.object({ paypalOrderId }), req.body);
+  res.status(201).json(toPublicOrder(await checkout(body.paypalOrderId)));
+}));
+
+// PayPal webhooks (pending captures clearing, denials, refunds and disputes). Signature-verified with PayPal.
+publicRouter.post('/paypal/webhook', wrap(async (req, res) => {
+  if (!(await verifyWebhook(req.headers, req.body))) {
+    logger.warn('Rejected PayPal webhook', { type: (req.body as { event_type?: string })?.event_type });
+    return res.status(400).json({ message: 'Invalid webhook.' });
+  }
+  await handlePayPalWebhook(req.body);
+  res.json({ ok: true });
 }));
 
 publicRouter.get('/orders/:orderNumber', wrap(async (req, res) => res.json(toPublicOrder(await getOrder(req.params.orderNumber)))));
@@ -99,7 +118,8 @@ publicRouter.post('/contact', writeLimit, wrap(async (req, res) => {
 /** Public, cacheable store config the storefront can read instead of hard-coding (delivery options, grades and their example photos). */
 publicRouter.get('/config', wrap(async (_req, res) => {
   const s = await getSettings();
-  res.json({ store: { name: s.store.name, supportEmail: s.store.supportEmail, whatsapp: s.store.whatsapp, hours: s.store.hours, warrantyMonths: s.store.warrantyMonths, returnsDays: s.store.returnsDays }, delivery: s.delivery.filter((d) => d.enabled), conditions: s.conditions, paypal: { mode: s.payments.mode, clientId: s.payments.clientId } });
+  res.json({ store: { name: s.store.name, supportEmail: s.store.supportEmail, whatsapp: s.store.whatsapp, hours: s.store.hours, warrantyMonths: s.store.warrantyMonths, returnsDays: s.store.returnsDays }, delivery: s.delivery.filter((d) => d.enabled), conditions: s.conditions, // The PayPal app in the server's .env is the one that can capture, so the browser must use the same client id.
+    paypal: { mode: env.paypalEnabled ? env.PAYPAL_MODE : s.payments.mode, clientId: env.paypalEnabled ? env.PAYPAL_CLIENT_ID : s.payments.clientId, enabled: env.paypalEnabled } });
 }));
 
 void clean;

@@ -1,7 +1,7 @@
 import { MongoClient, type Collection, type Db, type Document } from 'mongodb';
 import { env } from './env.js';
 import { logger } from '../lib/logger.js';
-import type { ActivityDoc, AdminDoc, CustomerNoteDoc, EnquiryDoc, OrderDoc, OtpDoc, ProductDoc, ReviewDoc, RoleDoc, SettingsDoc, SubscriberDoc } from '../types.js';
+import type { ActivityDoc, AdminDoc, CustomerNoteDoc, EnquiryDoc, OrderDoc, OtpDoc, PaymentDoc, ProductDoc, ReviewDoc, RoleDoc, SettingsDoc, SubscriberDoc } from '../types.js';
 
 let client: MongoClient | null = null;
 let db: Db | null = null;
@@ -45,6 +45,7 @@ export const col = {
   otps: () => getDb().collection<OtpDoc>('otps'),
   activity: () => getDb().collection<ActivityDoc>('activity'),
   customerNotes: () => getDb().collection<CustomerNoteDoc>('customer_notes'),
+  payments: () => getDb().collection<PaymentDoc>('payments'),
 };
 
 async function ensureIndexes(d: Db) {
@@ -52,7 +53,8 @@ async function ensureIndexes(d: Db) {
     for (const [keys, opts] of specs) await c.createIndex(keys, opts ?? {});
   };
   await idx(d.collection('products'), [[{ slug: 1 }, { unique: true }], [{ status: 1, brand: 1 }], [{ updatedAt: -1 }]]);
-  await idx(d.collection('orders'), [[{ orderNumber: 1 }, { unique: true }], [{ createdAt: -1 }], [{ 'customer.email': 1 }], [{ status: 1 }]]);
+  await idx(d.collection('orders'), [[{ orderNumber: 1 }, { unique: true }], [{ createdAt: -1 }], [{ 'customer.email': 1 }], [{ status: 1 }], [{ paymentRef: 1 }], [{ captureId: 1 }]]);
+  await idx(d.collection('payments'), [[{ paypalOrderId: 1 }, { unique: true }], [{ id: 1 }, { unique: true }], [{ createdAt: -1 }]]);
   await idx(d.collection('reviews'), [[{ productId: 1, status: 1 }], [{ date: -1 }]]);
   await idx(d.collection('enquiries'), [[{ createdAt: -1 }], [{ status: 1 }]]);
   await idx(d.collection('subscribers'), [[{ email: 1 }, { unique: true }]]);

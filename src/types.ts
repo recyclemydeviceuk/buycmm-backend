@@ -6,7 +6,8 @@ import type { Permission } from './lib/permissions.js';
 
 export type { Condition, OrderStatus, Permission };
 export type DeliveryMethod = 'standard' | 'next-day';
-export type PaymentStatus = 'paid' | 'partially-refunded' | 'refunded';
+/** `pending`: PayPal accepted the payment but is still clearing it. `failed`: PayPal denied a pending payment. */
+export type PaymentStatus = 'pending' | 'paid' | 'partially-refunded' | 'refunded' | 'failed';
 export type ProductStatus = 'active' | 'draft' | 'archived';
 
 /** A finish the model is sold in. `image` is the photo shown when that colour is picked. */
@@ -113,6 +114,23 @@ export interface OrderDoc {
   tracking?: Tracking;
   events: OrderEvent[];
   flagged: boolean;
+}
+/** One checkout attempt: the basket as priced when its PayPal order was created. */
+export interface PaymentDoc {
+  _id?: ObjectId;
+  id: string;
+  paypalOrderId: string;
+  status: 'created' | 'processing' | 'completed' | 'failed';
+  lines: BasketLine[];
+  customer: Address;
+  delivery: DeliveryMethod;
+  subtotal: number;
+  deliveryFee: number;
+  total: number;
+  orderNumber?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 export type PublicOrder = Pick<OrderDoc, 'orderNumber' | 'createdAt' | 'status' | 'lines' | 'subtotal' | 'deliveryFee' | 'total' | 'delivery' | 'customer' | 'estimatedDelivery'>;
 
